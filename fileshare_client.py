@@ -1,13 +1,14 @@
 import socket
+import getpass
 import os
-
-# ... (Constants for ports, network addresses, file chunk size etc.) ...
+import crypto_utils
 
 class FileShareClient:
     def __init__(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.username = None
         self.session_key = None  # For symmetric encryption with peers
+        self.is_authenticated = False
 
     def connect_to_peer(self, peer_address):
         try:
@@ -19,20 +20,35 @@ class FileShareClient:
             return False
 
     def register_user(self, username, password):
-        # ... (Implement registration process - send username, hashed password+salt to a registration service/peer
-        # - how to distribute user info in P2P?
-        # - Simplification needed, perhaps a dedicated 'user registry' peer initially or file-based for simplicity) ...
-        # ... (Client-side password hashing and salt generation) ...
-        pass
+        hashed_password, salt = crypto_utils.hash_password(password)
+        self.client_socket.sendall("REGISTER".encode())
+        self.client_socket.sendall(f"{username}:{hashed_password.hex()}:{salt.hex()}".encode())
+        response = self.client_socket.recv(1024).decode()
+        if response == "SUCCESS":
+            print(f"[+] User '{username}' registered successfully.")
+            return True
+        else:
+            print(f"[!] Registration failed: {response}")
+            return False
 
     def login_user(self, username, password):
-        # ... (Implement login process - send username, password
-        # - server/peer authenticates against stored hashed password
-        # - handle session - simplified session management for P2P could be token-based or direct connection based) ...
-        # ... (Client-side password hashing to compare against stored hash) ...
-        pass
+        self.client_socket.sendall("LOGIN".encode())
+        self.client_socket.sendall(f"{username}:{password}".encode())
+        response = self.client_socket.recv(1024).decode()
+        if response == "SUCCESS":
+            self.username = username
+            self.is_authenticated = True
+            print(f"[+] User '{username}' logged in successfully.")
+            return True
+        else:
+            print(f"[!] Login failed: {response}")
+            return False
 
     def upload_file(self, filepath):
+        if not self.is_authenticated:
+            print("[!] You must be logged in to upload files.")
+            return
+
         if not os.path.exists(filepath):
             print("[!] File does not exist.")
             return
@@ -49,6 +65,10 @@ class FileShareClient:
         print(f"[+] File '{filename}' uploaded successfully.")
 
     def download_file(self, filename, destination_path):
+        if not self.is_authenticated:
+            print("[!] You must be logged in to download files.")
+            return
+
         self.client_socket.sendall("DOWNLOAD".encode())
         self.client_socket.sendall(filename.encode())
 
@@ -72,14 +92,15 @@ class FileShareClient:
         pass
 
     def list_shared_files(self):
+        if not self.is_authenticated:
+            print("[!] You must be logged in to list files.")
+            return
+
         self.client_socket.sendall("LIST".encode())
         file_list = self.client_socket.recv(4096).decode()
         print("[+] Files available on peer:")
         print(file_list if file_list else "(No files shared)")
 
-    # ... (Methods for P2P message handling, network discovery - simplified) ...
-
-# ... (Client program entry point, user interface loop) ...
 if __name__ == "__main__":
     peer_ip = "127.0.0.1"
     peer_port = 5000
@@ -87,10 +108,20 @@ if __name__ == "__main__":
     client = FileShareClient()
     if client.connect_to_peer((peer_ip, peer_port)):
         while True:
-            print("\nCommands: upload, download, list, exit")
+            print("\nCommands: register, login, upload, download, list, exit")
             cmd = input("Enter command: ").strip().lower()
 
-            if cmd == "upload":
+            if cmd == "register":
+                username = input("Enter username: ")
+                password = getpass.getpass("Enter password: ")
+                client.register_user(username, password)
+
+            elif cmd == "login":
+                username = input("Enter username: ")
+                password = getpass.getpass("Enter password: ")
+                client.login_user(username, password)
+
+            elif cmd == "upload":
                 path = input("Enter full path of file to upload: ")
                 client.upload_file(path)
 
@@ -101,6 +132,11 @@ if __name__ == "__main__":
 
             elif cmd == "list":
                 client.list_shared_files()
+
+            elif cmd == "exit":
+                print("[+] Exiting.")
+                client.client_socket.close()
+                break
 
             else:
                 print("[!] Unknown command.")
