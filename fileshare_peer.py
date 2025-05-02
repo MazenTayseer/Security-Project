@@ -2,6 +2,7 @@ import socket
 import threading
 import os
 import crypto_utils
+import secrets
 
 class FileSharePeer:
     def __init__(self, port):
@@ -9,8 +10,9 @@ class FileSharePeer:
         self.port = port
         self.host = '0.0.0.0'  # Listen on all interfaces
         self.users = {}  # {username: {hashed_password, salt}}
-        self.shared_files = {}  # {file_id: filepath}
+        self.shared_files = {}  # {filename: {filepath, hash, nonce, tag}}
         self.authenticated_clients = {}  # {client_address: username}
+        self.session_key = secrets.token_bytes(32)
         os.makedirs("shared", exist_ok=True)
 
     def start_peer(self):
@@ -57,7 +59,7 @@ class FileSharePeer:
                         if crypto_utils.verify_password(password, user["hashed_password"], user["salt"]):
                             self.authenticated_clients[client_address] = username
                             client_socket.sendall("SUCCESS".encode())
-                            import ipdb; ipdb.set_trace()
+                            client_socket.sendall(self.session_key)
                             print(f"[+] User {username} logged in from {client_address}")
                         else:
                             client_socket.sendall("INVALID_CREDENTIALS".encode())
@@ -70,35 +72,49 @@ class FileSharePeer:
                         continue
 
                     if command == "UPLOAD":
-                        filename = client_socket.recv(1024).decode().strip()
-                        filepath = os.path.join("shared", filename)
+                        # Receive metadata: [filename|hash|nonce|tag|ciphertext]
+                        filename = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big')).decode()
+                        file_hash = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
+                        nonce = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
+                        tag = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
+                        ciphertext = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
 
+                        filepath = os.path.join("shared", filename + ".enc")
                         with open(filepath, 'wb') as f:
-                            while True:
-                                chunk = client_socket.recv(4096)
-                                if chunk == b"EOF":
-                                    break
-                                f.write(chunk)
+                            f.write(ciphertext)
 
-                        self.shared_files[filename] = filepath
-                        print(f"[+] Received file: {filename} from {self.authenticated_clients[client_address]}")
+                        # Store metadata
+                        self.shared_files[filename] = {
+                            "filepath": filepath,
+                            "hash": file_hash,
+                            "nonce": nonce,
+                            "tag": tag
+                        }
+                        print(f"[+] Received encrypted file: {filename} from {self.authenticated_clients[client_address]}")
 
                     elif command == "DOWNLOAD":
-                        filename = client_socket.recv(1024).decode().strip()
-                        filepath = self.shared_files.get(filename)
+                        filename = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big')).decode()
+                        file_info = self.shared_files.get(filename, None)
 
-                        if filepath and os.path.exists(filepath):
-                            with open(filepath, 'rb') as f:
-                                while chunk := f.read(4096):
-                                    client_socket.sendall(chunk)
-                            client_socket.sendall(b"EOF")
-                            print(f"[+] Sent file: {filename} to {self.authenticated_clients[client_address]}")
+                        if file_info and os.path.exists(file_info["filepath"]):
+                            # Send metadata: [hash|nonce|tag|ciphertext]
+                            client_socket.sendall(b"FILE_FOUND")
+                            client_socket.sendall(len(file_info["hash"]).to_bytes(4, 'big') + file_info["hash"])
+                            client_socket.sendall(len(file_info["nonce"]).to_bytes(4, 'big') + file_info["nonce"])
+                            client_socket.sendall(len(file_info["tag"]).to_bytes(4, 'big') + file_info["tag"])
+                            with open(file_info["filepath"], 'rb') as f:
+                                ciphertext = f.read()
+                            client_socket.sendall(len(ciphertext).to_bytes(4, 'big') + ciphertext)
+                            print(f"[+] Sent encrypted file: {filename} to {self.authenticated_clients[client_address]}")
                         else:
                             client_socket.sendall(b"FILE_NOT_FOUND")
 
                     elif command == "LIST":
                         file_list = "\n".join(self.shared_files.keys())
-                        client_socket.sendall(file_list.encode())
+                        if file_list:
+                            client_socket.sendall(file_list.encode())
+                        else:
+                            client_socket.sendall(b"NO_FILES_FOUND")
 
                 else:
                     client_socket.sendall("UNKNOWN_COMMAND".encode())

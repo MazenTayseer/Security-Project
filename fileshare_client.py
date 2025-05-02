@@ -7,7 +7,7 @@ class FileShareClient:
     def __init__(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.username = None
-        self.session_key = None  # For symmetric encryption with peers
+        self.session_key = None
         self.is_authenticated = False
 
     def connect_to_peer(self, peer_address):
@@ -38,6 +38,7 @@ class FileShareClient:
         if response == "SUCCESS":
             self.username = username
             self.is_authenticated = True
+            self.session_key = self.client_socket.recv(32)
             print(f"[+] User '{username}' logged in successfully.")
             return True
         else:
@@ -54,15 +55,23 @@ class FileShareClient:
             return
 
         filename = os.path.basename(filepath)
-        self.client_socket.sendall("UPLOAD".encode())
-        self.client_socket.sendall(filename.encode())
-
         with open(filepath, 'rb') as f:
-            while chunk := f.read(4096):
-                self.client_socket.sendall(chunk)
-        self.client_socket.sendall(b"EOF")
+            plaintext = f.read()
 
-        print(f"[+] File '{filename}' uploaded successfully.")
+        file_hash = crypto_utils.compute_file_hash(plaintext)
+        ciphertext, nonce, tag = crypto_utils.encrypt_file(plaintext, self.session_key)
+
+        self.client_socket.sendall("UPLOAD".encode())
+        # Send metadata: [filename|hash|nonce|tag|ciphertext]
+        filename_bytes = filename.encode()
+        data = (len(filename_bytes).to_bytes(4, 'big') + filename_bytes +
+                len(file_hash).to_bytes(4, 'big') + file_hash +
+                len(nonce).to_bytes(4, 'big') + nonce +
+                len(tag).to_bytes(4, 'big') + tag +
+                len(ciphertext).to_bytes(4, 'big') + ciphertext)
+        self.client_socket.sendall(data)
+
+        print(f"[+] File '{filename}' uploaded successfully (encrypted).")
 
     def download_file(self, filename, destination_path):
         if not self.is_authenticated:
@@ -70,22 +79,40 @@ class FileShareClient:
             return
 
         self.client_socket.sendall("DOWNLOAD".encode())
-        self.client_socket.sendall(filename.encode())
+        filename_bytes = filename.encode()
+        self.client_socket.sendall(len(filename_bytes).to_bytes(4, 'big') + filename_bytes)
 
-        full_path = os.path.join(destination_path, filename)
-        os.makedirs(destination_path, exist_ok=True)
+        initial_response = self.client_socket.recv(1024).decode()
+        if initial_response == "FILE_NOT_FOUND":
+            print("[!] File not found on peer.")
+            return
 
-        with open(full_path, 'wb') as f:
-            while True:
-                chunk = self.client_socket.recv(4096)
-                if chunk == b"EOF":
-                    break
-                elif chunk == b"FILE_NOT_FOUND":
-                    print("[!] File not found on peer.")
-                    return
-                f.write(chunk)
+        # Receive metadata: [hash|nonce|tag|ciphertext]
+        hash_len = int.from_bytes(self.client_socket.recv(4), 'big')
+        file_hash = self.client_socket.recv(hash_len)
+        nonce_len = int.from_bytes(self.client_socket.recv(4), 'big')
+        nonce = self.client_socket.recv(nonce_len)
+        tag_len = int.from_bytes(self.client_socket.recv(4), 'big')
+        tag = self.client_socket.recv(tag_len)
+        ciphertext_len = int.from_bytes(self.client_socket.recv(4), 'big')
+        ciphertext = self.client_socket.recv(ciphertext_len)
 
-        print(f"[+] File '{filename}' downloaded to '{destination_path}'")
+        try:
+            plaintext = crypto_utils.decrypt_file(ciphertext, self.session_key, nonce, tag)
+            if not crypto_utils.verify_file_hash(plaintext, file_hash):
+                print("[!] Integrity check failed: File hash does not match.")
+                return
+
+            full_destination_path = os.path.join(destination_path, self.username)
+            os.makedirs(full_destination_path, exist_ok=True)
+            full_path = os.path.join(full_destination_path, filename)
+            with open(full_path, 'wb') as f:
+                f.write(plaintext)
+
+            print(f"[+] File '{filename}' downloaded and decrypted to '{full_destination_path}'")
+        except Exception:
+            print("[!] An error occured.")
+            return
 
     def search_files(self, keyword):
         # ... (Implement file search in the P2P network - broadcasting? Distributed Index? - Simplification required) ...
@@ -98,8 +125,12 @@ class FileShareClient:
 
         self.client_socket.sendall("LIST".encode())
         file_list = self.client_socket.recv(4096).decode()
-        print("[+] Files available on peer:")
-        print(file_list if file_list else "(No files shared)")
+
+        if file_list == "NO_FILES_FOUND":
+            print("[!] No files shared by the peer.")
+        else:
+            print("[+] Files available on peer:")
+            print(file_list if file_list else "(No files shared)")
 
 if __name__ == "__main__":
     peer_ip = "127.0.0.1"
