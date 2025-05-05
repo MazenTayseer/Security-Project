@@ -6,25 +6,38 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
-def hash_password(password, salt=None):
-    if salt is None:
-        salt = secrets.token_bytes(16)
-    
-    salted_password = password.encode('utf-8') + salt
-    hashed_password = hashlib.sha256(salted_password).digest() # converts to binary format (bytes shown in hex)
+def hash_password(password):
+    salt = secrets.token_bytes(16)
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA512(),
+        length=32,
+        salt=salt,
+        iterations=500_000,
+        backend=default_backend()
+    )
+    hashed_password = kdf.derive(password.encode('utf-8'))
     return hashed_password, salt
 
 def verify_password(password, hashed_password, salt):
-    salted_password = password.encode('utf-8') + salt
-    computed_hash = hashlib.sha256(salted_password).digest() # converts to binary format (bytes shown in hex)
-    return computed_hash == hashed_password
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA512(),
+        length=32,
+        salt=salt,
+        iterations=500_000,
+        backend=default_backend()
+    )
+    try:
+        kdf.verify(password.encode('utf-8'), hashed_password)
+        return True
+    except Exception:
+        return False
 
 def derive_key_from_password(password, salt):
     kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,            # Key length for AES-256
+        algorithm=hashes.SHA512(),
+        length=32,
         salt=salt,
-        iterations=100000,    # Increase for better security
+        iterations=500_000,
         backend=default_backend()
     )
 
