@@ -26,10 +26,8 @@ class FileShareClient:
         response = self.client_socket.recv(1024).decode()
         if response == "SUCCESS":
             print(f"[+] User '{username}' registered successfully.")
-            return True
         else:
             print(f"[!] Registration failed: {response}")
-            return False
 
     def login_user(self, username, password):
         self.client_socket.sendall("LOGIN".encode())
@@ -40,9 +38,39 @@ class FileShareClient:
             self.is_authenticated = True
             self.session_key = self.client_socket.recv(32)
             print(f"[+] User '{username}' logged in successfully.")
-            return True
         else:
             print(f"[!] Login failed: {response}")
+
+    def share_file(self, filename, target_user):
+        if not self.is_authenticated:
+            print("[!] You must be logged in to share files.")
+            return False
+            
+        self.client_socket.sendall("SHARE_FILE".encode())
+        self.client_socket.sendall(f"{filename}:{target_user}".encode())
+        response = self.client_socket.recv(1024).decode()
+        
+        if response == "SUCCESS":
+            print(f"[+] File '{filename}' shared with '{target_user}' successfully.")
+            return True
+        else:
+            print(f"[!] Failed to share file: {response}")
+            return False
+            
+    def unshare_file(self, filename, target_user):
+        if not self.is_authenticated:
+            print("[!] You must be logged in to modify file permissions.")
+            return False
+            
+        self.client_socket.sendall("UNSHARE_FILE".encode())
+        self.client_socket.sendall(f"{filename}:{target_user}".encode())
+        response = self.client_socket.recv(1024).decode()
+        
+        if response == "SUCCESS":
+            print(f"[+] Access to '{filename}' revoked from '{target_user}' successfully.")
+            return True
+        else:
+            print(f"[!] Failed to revoke access: {response}")
             return False
 
     def upload_file(self, filepath):
@@ -70,8 +98,12 @@ class FileShareClient:
                 len(tag).to_bytes(4, 'big') + tag +
                 len(ciphertext).to_bytes(4, 'big') + ciphertext)
         self.client_socket.sendall(data)
-
-        print(f"[+] File '{filename}' uploaded successfully (encrypted).")
+        
+        response = self.client_socket.recv(1024).decode()
+        if response == "SUCCESS":
+            print(f"[+] File '{filename}' uploaded successfully (encrypted).")
+        else:
+            print(f"[!] Upload failed: {response}")
 
     def download_file(self, filename, destination_path):
         if not self.is_authenticated:
@@ -118,6 +150,20 @@ class FileShareClient:
         # ... (Implement file search in the P2P network - broadcasting? Distributed Index? - Simplification required) ...
         pass
 
+    def list_users(self):
+        if not self.is_authenticated:
+            print("[!] You must be logged in to list users.")
+            return
+            
+        self.client_socket.sendall("LIST_USERS".encode())
+        users = self.client_socket.recv(1024).decode()
+
+        if users == "NO_USERS_FOUND":
+            print("[!] No users.")
+        else:
+            print("[+] Current Users:")
+            print(users)
+
     def list_shared_files(self):
         if not self.is_authenticated:
             print("[!] You must be logged in to list files.")
@@ -127,10 +173,10 @@ class FileShareClient:
         file_list = self.client_socket.recv(4096).decode()
 
         if file_list == "NO_FILES_FOUND":
-            print("[!] No files shared by the peer.")
+            print("[!] No files available to you.")
         else:
-            print("[+] Files available on peer:")
-            print(file_list if file_list else "(No files shared)")
+            print("[+] Files available to you:")
+            print(file_list)
 
 if __name__ == "__main__":
     peer_ip = "127.0.0.1"
@@ -139,7 +185,7 @@ if __name__ == "__main__":
     client = FileShareClient()
     if client.connect_to_peer((peer_ip, peer_port)):
         while True:
-            print("\nCommands: register, login, upload, download, list, exit")
+            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, exit")
             cmd = input("Enter command: ").strip().lower()
 
             if cmd == "register":
@@ -163,6 +209,19 @@ if __name__ == "__main__":
 
             elif cmd == "list":
                 client.list_shared_files()
+                
+            elif cmd == "list-users":
+                client.list_users()
+                
+            elif cmd == "share":
+                filename = input("Enter filename to share: ")
+                user_choice = input("Enter username to share with: ")
+                client.share_file(filename, user_choice)
+                
+            elif cmd == "unshare":
+                filename = input("Enter filename to unshare: ")
+                user_choice = input("Enter username to revoke access from: ")
+                client.unshare_file(filename, user_choice)
 
             elif cmd == "exit":
                 print("[+] Exiting.")
