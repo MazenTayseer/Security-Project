@@ -4,7 +4,6 @@ import os
 from constants import Constants
 import crypto_utils
 import secrets
-import json
 
 class FileSharePeer:
     def __init__(self, port):
@@ -134,7 +133,7 @@ class FileSharePeer:
                     else:
                         client_socket.sendall("NOT_SHARED".encode())
 
-                elif command in ["UPLOAD", "DOWNLOAD", "LIST"]:
+                elif command in ["UPLOAD", "DOWNLOAD", "LIST", "SEARCH"]:
                     if client_address not in self.authenticated_clients:
                         client_socket.sendall("NOT_AUTHENTICATED".encode())
                         continue
@@ -222,6 +221,21 @@ class FileSharePeer:
                                 accessible_files.append(f"{filename} {owner_info}")
 
                         file_list = "\n".join(accessible_files)
+                        if file_list:
+                            client_socket.sendall(file_list.encode())
+                        else:
+                            client_socket.sendall(b"NO_FILES_FOUND")
+
+                    elif command == "SEARCH":
+                        keyword = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big')).decode()
+                        matching_files = []
+                        for filename, info in self.shared_files.items():
+                            if (info.get("owner") == current_user or current_user in info.get("shared_with", [])):
+                                if keyword.lower() in filename.lower():
+                                    owner_info = "(owner)" if info.get("owner") == current_user else f"(shared by {info.get('owner')})"
+                                    matching_files.append(f"{filename} {owner_info}")
+
+                        file_list = "\n".join(matching_files)
                         if file_list:
                             client_socket.sendall(file_list.encode())
                         else:

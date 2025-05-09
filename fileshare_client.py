@@ -5,6 +5,7 @@ import json
 from constants import Constants
 import crypto_utils
 import math
+import re
 
 class FileShareClient:
     def __init__(self):
@@ -14,6 +15,17 @@ class FileShareClient:
         self.is_authenticated = False
         self.credentials_file = Constants.CREDENTIALS_ENC
         self.chunk_size = 1024 * 1024
+
+    def __password_check(self, password):
+        if len(password) < 8:
+            return "Password must be at least 8 characters long."
+        if not re.search(r"[A-Z]", password):
+            return "Password must contain at least one uppercase letter."
+        if not re.search(r"[a-z]", password):
+            return "Password must contain at least one lowercase letter."
+        if not re.search(r"[0-9]", password):
+            return "Password must contain at least one digit."
+        return None
 
     def connect_to_peer(self, peer_address):
         try:
@@ -81,6 +93,14 @@ class FileShareClient:
             print(f"[!] Error deleting credentials: {e}")
 
     def register_user(self, username, password):
+        if len(username) < 4:
+            print("[!] Registration failed: Username must be at least 4 characters.")
+            return
+        password_error = self.__password_check(password)
+        while password_error:
+            print(f"[!] Registration failed: {password_error}")
+            password = getpass.getpass("Enter password: ")
+            password_error = self.__password_check(password)
         hashed_password, salt = crypto_utils.hash_password(password)
         self.client_socket.sendall("REGISTER".encode())
         self.client_socket.sendall(f"{username}:{hashed_password.hex()}:{salt.hex()}".encode())
@@ -236,7 +256,20 @@ class FileShareClient:
         print(f"[+] File '{filename}' downloaded and decrypted to '{full_destination_path}'")
 
     def search_files(self, keyword):
-        pass
+        if not self.is_authenticated:
+            print("[!] You must be logged in to search files.")
+            return
+
+        self.client_socket.sendall("SEARCH".encode())
+        keyword_bytes = keyword.encode()
+        self.client_socket.sendall(len(keyword_bytes).to_bytes(4, 'big') + keyword_bytes)
+
+        response = self.client_socket.recv(4096).decode()
+        if response == "NO_FILES_FOUND":
+            print(f"[!] No files found matching '{keyword}'.")
+        else:
+            print(f"[+] Files matching '{keyword}':")
+            print(response)
 
     def list_users(self):
         if not self.is_authenticated:
@@ -294,7 +327,7 @@ if __name__ == "__main__":
                 print("[+] Skipping auto-login.")
 
         while True:
-            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, delete-credentials, logout, exit")
+            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, delete-credentials, logout, search, exit")
             cmd = input("Enter command: ").strip().lower()
 
             if cmd == "register":
@@ -334,6 +367,10 @@ if __name__ == "__main__":
                 filename = input("Enter filename to unshare: ")
                 user_choice = input("Enter username to revoke access from: ")
                 client.unshare_file(filename, user_choice)
+
+            elif cmd == "search":
+                keyword = input("Enter keyword to search for: ")
+                client.search_files(keyword)
 
             elif cmd == "exit":
                 print("[+] Exiting.")
