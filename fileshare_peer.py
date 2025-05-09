@@ -16,6 +16,7 @@ class FileSharePeer:
         self.authenticated_clients = {}  # {client_address: username}
         self.session_key = secrets.token_bytes(32)
         os.makedirs(Constants.SHARED_FOLDER, exist_ok=True)
+        os.remove(Constants.CREDENTIALS_ENC) if os.path.exists(Constants.CREDENTIALS_ENC) else None
 
     def start_peer(self):
         self.peer_socket.bind((self.host, self.port))
@@ -141,23 +142,42 @@ class FileSharePeer:
                     current_user = self.authenticated_clients[client_address]
 
                     if command == "UPLOAD":
-                        # Receive metadata: [filename|hash|nonce|tag|ciphertext]
+                        # Receive metadata: [filename|total_chunks|file_hash]
                         filename = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big')).decode()
+                        total_chunks = int.from_bytes(client_socket.recv(4), 'big')
                         file_hash = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
-                        nonce = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
-                        tag = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
-                        ciphertext = client_socket.recv(int.from_bytes(client_socket.recv(4), 'big'))
+
+                        ciphertext = bytearray()
+                        chunk_metadata = []
+                        for chunk_index in range(total_chunks):
+                            # Receive chunk: [chunk_index|nonce|tag|ciphertext]
+                            received_chunk_index = int.from_bytes(client_socket.recv(4), 'big')
+                            if received_chunk_index != chunk_index:
+                                client_socket.sendall("INVALID_CHUNK_INDEX".encode())
+                                return
+                            nonce_len = int.from_bytes(client_socket.recv(4), 'big')
+                            nonce = client_socket.recv(nonce_len)
+                            tag_len = int.from_bytes(client_socket.recv(4), 'big')
+                            tag = client_socket.recv(tag_len)
+                            ciphertext_len = int.from_bytes(client_socket.recv(4), 'big')
+                            chunk_ciphertext = client_socket.recv(ciphertext_len)
+                            ciphertext.extend(chunk_ciphertext)
+                            chunk_metadata.append({
+                                "nonce": nonce,
+                                "tag": tag,
+                                "offset": ciphertext_len
+                            })
+                            print(f"[+] Received chunk {chunk_index + 1}/{total_chunks} for '{filename}'")
 
                         filepath = os.path.join(Constants.SHARED_FOLDER, filename + ".enc")
                         with open(filepath, 'wb') as f:
                             f.write(ciphertext)
 
-                        # Store metadata with ownership information
                         self.shared_files[filename] = {
                             "filepath": filepath,
                             "hash": file_hash,
-                            "nonce": nonce,
-                            "tag": tag,
+                            "total_chunks": total_chunks,
+                            "chunk_metadata": chunk_metadata,
                             "owner": current_user,
                             "shared_with": []
                         }
@@ -171,16 +191,25 @@ class FileSharePeer:
                         if (file_info and os.path.exists(file_info["filepath"]) and 
                             (file_info.get("owner") == current_user or 
                              current_user in file_info.get("shared_with"))):
-                      
-                            # Send metadata: [hash|nonce|tag|ciphertext]
+                            # Send metadata: [total_chunks|file_hash]
                             client_socket.sendall(b"FILE_FOUND")
+                            client_socket.sendall(file_info["total_chunks"].to_bytes(4, 'big'))
                             client_socket.sendall(len(file_info["hash"]).to_bytes(4, 'big') + file_info["hash"])
-                            client_socket.sendall(len(file_info["nonce"]).to_bytes(4, 'big') + file_info["nonce"])
-                            client_socket.sendall(len(file_info["tag"]).to_bytes(4, 'big') + file_info["tag"])
+
                             with open(file_info["filepath"], 'rb') as f:
                                 ciphertext = f.read()
-                            client_socket.sendall(len(ciphertext).to_bytes(4, 'big') + ciphertext)
-                            print(f"[+] Sent encrypted file: {filename} to {self.authenticated_clients[client_address]}")
+
+                            offset = 0
+                            for chunk_index in range(file_info["total_chunks"]):
+                                chunk_meta = file_info["chunk_metadata"][chunk_index]
+                                chunk_size = chunk_meta["offset"]
+                                chunk_data = ciphertext[offset:offset + chunk_size]
+                                offset += chunk_size
+                                # Send chunk: [nonce|tag|ciphertext]
+                                client_socket.sendall(len(chunk_meta["nonce"]).to_bytes(4, 'big') + chunk_meta["nonce"])
+                                client_socket.sendall(len(chunk_meta["tag"]).to_bytes(4, 'big') + chunk_meta["tag"])
+                                client_socket.sendall(len(chunk_data).to_bytes(4, 'big') + chunk_data)
+                                print(f"[+] Sent chunk {chunk_index + 1}/{file_info['total_chunks']} for '{filename}'")
                         else:
                             client_socket.sendall(b"FILE_NOT_FOUND")
 
@@ -189,10 +218,9 @@ class FileSharePeer:
                         for filename, info in self.shared_files.items():
                             if (info.get("owner") == current_user or 
                                 current_user in info.get("shared_with", [])):
-                                
                                 owner_info = "(owner)" if info.get("owner") == current_user else f"(shared by {info.get('owner')})"
                                 accessible_files.append(f"{filename} {owner_info}")
-                                
+
                         file_list = "\n".join(accessible_files)
                         if file_list:
                             client_socket.sendall(file_list.encode())

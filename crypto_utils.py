@@ -44,7 +44,7 @@ def derive_key_from_password(password, salt):
     key = kdf.derive(password.encode('utf-8'))
     return key
 
-def encrypt_file(data, key):
+def aes_encryption(data, key):
     nonce = secrets.token_bytes(12)
     cipher = Cipher(algorithms.AES(key), modes.GCM(nonce), backend=default_backend())
     encryptor = cipher.encryptor()

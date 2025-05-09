@@ -2,7 +2,9 @@ import socket
 import getpass
 import os
 import json
+from constants import Constants
 import crypto_utils
+import math
 
 class FileShareClient:
     def __init__(self):
@@ -10,7 +12,8 @@ class FileShareClient:
         self.username = None
         self.session_key = None
         self.is_authenticated = False
-        self.credentials_file = "credentials.enc"
+        self.credentials_file = Constants.CREDENTIALS_ENC
+        self.chunk_size = 1024 * 1024
 
     def connect_to_peer(self, peer_address):
         try:
@@ -26,8 +29,7 @@ class FileShareClient:
             key = crypto_utils.derive_key_from_password(password, username.encode())
             credentials = {"username": username, "password": password}
             credentials_json = json.dumps(credentials).encode('utf-8')
-            ciphertext, nonce, tag = crypto_utils.encrypt_file(credentials_json, key)
-            # Save to file: [username|nonce|tag|ciphertext]
+            ciphertext, nonce, tag = crypto_utils.aes_encryption(credentials_json, key)
             with open(self.credentials_file, 'wb') as f:
                 f.write(len(username.encode()).to_bytes(4, 'big') + username.encode() +
                         len(nonce).to_bytes(4, 'big') + nonce +
@@ -144,22 +146,35 @@ class FileShareClient:
             return
 
         filename = os.path.basename(filepath)
+        file_size = os.path.getsize(filepath)
+        total_chunks = math.ceil(file_size / self.chunk_size)
+
         with open(filepath, 'rb') as f:
             plaintext = f.read()
-
         file_hash = crypto_utils.compute_file_hash(plaintext)
-        ciphertext, nonce, tag = crypto_utils.encrypt_file(plaintext, self.session_key)
 
         self.client_socket.sendall("UPLOAD".encode())
-        # Send metadata: [filename|hash|nonce|tag|ciphertext]
+        # Send metadata: [filename|total_chunks|file_hash]
         filename_bytes = filename.encode()
-        data = (len(filename_bytes).to_bytes(4, 'big') + filename_bytes +
-                len(file_hash).to_bytes(4, 'big') + file_hash +
-                len(nonce).to_bytes(4, 'big') + nonce +
-                len(tag).to_bytes(4, 'big') + tag +
-                len(ciphertext).to_bytes(4, 'big') + ciphertext)
-        self.client_socket.sendall(data)
-        
+        metadata = (len(filename_bytes).to_bytes(4, 'big') + filename_bytes +
+                    total_chunks.to_bytes(4, 'big') +
+                    len(file_hash).to_bytes(4, 'big') + file_hash)
+        self.client_socket.sendall(metadata)
+
+        with open(filepath, 'rb') as f:
+            for chunk_index in range(total_chunks):
+                chunk_data = f.read(self.chunk_size)
+                if not chunk_data:
+                    break
+                ciphertext, nonce, tag = crypto_utils.aes_encryption(chunk_data, self.session_key)
+                # Send chunk: [chunk_index|nonce|tag|ciphertext]
+                chunk_metadata = (chunk_index.to_bytes(4, 'big') +
+                                 len(nonce).to_bytes(4, 'big') + nonce +
+                                 len(tag).to_bytes(4, 'big') + tag +
+                                 len(ciphertext).to_bytes(4, 'big') + ciphertext)
+                self.client_socket.sendall(chunk_metadata)
+                print(f"[+] Sent chunk {chunk_index + 1}/{total_chunks} for '{filename}'")
+
         response = self.client_socket.recv(1024).decode()
         if response == "SUCCESS":
             print(f"[+] File '{filename}' uploaded successfully (encrypted).")
@@ -180,35 +195,47 @@ class FileShareClient:
             print("[!] File not found on peer.")
             return
 
-        # Receive metadata: [hash|nonce|tag|ciphertext]
+        # Receive metadata: [total_chunks|file_hash]
+        total_chunks = int.from_bytes(self.client_socket.recv(4), 'big')
         hash_len = int.from_bytes(self.client_socket.recv(4), 'big')
         file_hash = self.client_socket.recv(hash_len)
-        nonce_len = int.from_bytes(self.client_socket.recv(4), 'big')
-        nonce = self.client_socket.recv(nonce_len)
-        tag_len = int.from_bytes(self.client_socket.recv(4), 'big')
-        tag = self.client_socket.recv(tag_len)
-        ciphertext_len = int.from_bytes(self.client_socket.recv(4), 'big')
-        ciphertext = self.client_socket.recv(ciphertext_len)
 
-        try:
-            plaintext = crypto_utils.decrypt_file(ciphertext, self.session_key, nonce, tag)
-            if not crypto_utils.verify_file_hash(plaintext, file_hash):
-                print("[!] Integrity check failed: File hash does not match.")
+        plaintext = bytearray()
+        for chunk_index in range(total_chunks):
+            # Receive chunk: [nonce|tag|ciphertext]
+            try:
+                nonce_len = int.from_bytes(self.client_socket.recv(4), 'big')
+                nonce = self.client_socket.recv(nonce_len)
+                tag_len = int.from_bytes(self.client_socket.recv(4), 'big')
+                tag = self.client_socket.recv(tag_len)
+                ciphertext_len = int.from_bytes(self.client_socket.recv(4), 'big')
+                ciphertext = self.client_socket.recv(ciphertext_len)
+
+                try:
+                    chunk_data = crypto_utils.decrypt_file(ciphertext, self.session_key, nonce, tag)
+                    plaintext.extend(chunk_data)
+                    print(f"[+] Received chunk {chunk_index + 1}/{total_chunks} for '{filename}'")
+                except Exception as e:
+                    print(f"[!] Error decrypting chunk {chunk_index + 1}: {e}")
+                    return
+            except Exception as e:
+                print(f"[!] Error receiving chunk {chunk_index + 1} metadata: {e}")
                 return
 
-            full_destination_path = os.path.join(destination_path, self.username)
-            os.makedirs(full_destination_path, exist_ok=True)
-            full_path = os.path.join(full_destination_path, filename)
-            with open(full_path, 'wb') as f:
-                f.write(plaintext)
-
-            print(f"[+] File '{filename}' downloaded and decrypted to '{full_destination_path}'")
-        except Exception:
-            print("[!] An error occured.")
+        # Verify file integrity
+        if not crypto_utils.verify_file_hash(plaintext, file_hash):
+            print("[!] Integrity check failed: File hash does not match.")
             return
 
+        full_destination_path = os.path.join(destination_path, self.username)
+        os.makedirs(full_destination_path, exist_ok=True)
+        full_path = os.path.join(full_destination_path, filename)
+        with open(full_path, 'wb') as f:
+            f.write(plaintext)
+
+        print(f"[+] File '{filename}' downloaded and decrypted to '{full_destination_path}'")
+
     def search_files(self, keyword):
-        # ... (Implement file search in the P2P network - broadcasting? Distributed Index? - Simplification required) ...
         pass
 
     def list_users(self):
@@ -267,7 +294,7 @@ if __name__ == "__main__":
                 print("[+] Skipping auto-login.")
 
         while True:
-            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, delete-credentials exit")
+            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, delete-credentials, logout, exit")
             cmd = input("Enter command: ").strip().lower()
 
             if cmd == "register":
@@ -313,7 +340,7 @@ if __name__ == "__main__":
                 client.client_socket.close()
                 break
 
-            elif cmd == "delete_credentials":
+            elif cmd == "delete-credentials":
                 client.delete_credentials()
 
             elif cmd == "logout":
