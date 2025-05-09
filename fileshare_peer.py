@@ -16,7 +16,6 @@ class FileSharePeer:
         self.authenticated_clients = {}  # {client_address: username}
         self.session_key = secrets.token_bytes(32)
         os.makedirs(Constants.SHARED_FOLDER, exist_ok=True)
-        os.makedirs(Constants.DB_FOLDER, exist_ok=True)
 
     def start_peer(self):
         self.peer_socket.bind((self.host, self.port))

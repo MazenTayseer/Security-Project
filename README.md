@@ -52,3 +52,4 @@
 
 - Add username and password validators
 - Authenticated in server only (OPTIONAL)
+- passphrase in server stored

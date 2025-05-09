@@ -1,6 +1,7 @@
 import socket
 import getpass
 import os
+import json
 import crypto_utils
 
 class FileShareClient:
@@ -9,6 +10,7 @@ class FileShareClient:
         self.username = None
         self.session_key = None
         self.is_authenticated = False
+        self.credentials_file = "credentials.enc"
 
     def connect_to_peer(self, peer_address):
         try:
@@ -18,6 +20,63 @@ class FileShareClient:
         except Exception as e:
             print(f"Error connecting to peer {peer_address}: {e}")
             return False
+        
+    def save_credentials(self, username, password):
+        try:
+            key = crypto_utils.derive_key_from_password(password, username.encode())
+            credentials = {"username": username, "password": password}
+            credentials_json = json.dumps(credentials).encode('utf-8')
+            ciphertext, nonce, tag = crypto_utils.encrypt_file(credentials_json, key)
+            # Save to file: [username|nonce|tag|ciphertext]
+            with open(self.credentials_file, 'wb') as f:
+                f.write(len(username.encode()).to_bytes(4, 'big') + username.encode() +
+                        len(nonce).to_bytes(4, 'big') + nonce +
+                        len(tag).to_bytes(4, 'big') + tag +
+                        ciphertext)
+            print(f"[+] Credentials saved to {self.credentials_file}")
+        except Exception as e:
+            print(f"[!] Error saving credentials: {e}")
+
+    def load_credentials(self):
+        try:
+            if not os.path.exists(self.credentials_file):
+                print("[!] No saved credentials found.")
+                return None, None
+
+            with open(self.credentials_file, 'rb') as f:
+                data = f.read()
+            username_len = int.from_bytes(data[:4], 'big')
+            username = data[4:4+username_len].decode()
+            nonce_len = int.from_bytes(data[4+username_len:8+username_len], 'big')
+            nonce = data[8+username_len:8+username_len+nonce_len]
+            tag_len = int.from_bytes(data[8+username_len+nonce_len:12+username_len+nonce_len], 'big')
+            tag = data[12+username_len+nonce_len:12+username_len+nonce_len+tag_len]
+            ciphertext = data[12+username_len+nonce_len+tag_len:]
+
+            password = getpass.getpass(f"Enter password for user '{username}': ")
+                
+            key = crypto_utils.derive_key_from_password(password, username.encode())
+            try:
+                credentials_json = crypto_utils.decrypt_file(ciphertext, key, nonce, tag)
+                credentials = json.loads(credentials_json.decode('utf-8'))
+                print(f"[+] Loaded credentials for user: {username}")
+                return username, credentials["password"]
+            except Exception:
+                print("[!] Decryption failed: Invalid password.")
+                return None, None
+        except Exception as e:
+            print(f"[!] Error loading credentials: {e}")
+            return None, None
+
+    def delete_credentials(self):
+        try:
+            if os.path.exists(self.credentials_file):
+                os.remove(self.credentials_file)
+                print(f"[+] Credentials file {self.credentials_file} deleted.")
+            else:
+                print("[!] No credentials file to delete.")
+        except Exception as e:
+            print(f"[!] Error deleting credentials: {e}")
 
     def register_user(self, username, password):
         hashed_password, salt = crypto_utils.hash_password(password)
@@ -38,8 +97,10 @@ class FileShareClient:
             self.is_authenticated = True
             self.session_key = self.client_socket.recv(32)
             print(f"[+] User '{username}' logged in successfully.")
+            return True
         else:
             print(f"[!] Login failed: {response}")
+            return False
 
     def share_file(self, filename, target_user):
         if not self.is_authenticated:
@@ -178,14 +239,35 @@ class FileShareClient:
             print("[+] Files available to you:")
             print(file_list)
 
+    def logout(self):
+        if not self.is_authenticated:
+            print("[!] You are not logged in.")
+            return
+
+        self.is_authenticated = False
+        self.username = None
+        self.session_key = None
+        self.client_socket.close()
+        print(f"[+] Logged out user '{self.username}'.")
+
 if __name__ == "__main__":
     peer_ip = "127.0.0.1"
     peer_port = 5000
 
     client = FileShareClient()
     if client.connect_to_peer((peer_ip, peer_port)):
+        if os.path.exists(client.credentials_file):
+            print("[+] Found saved credentials.")
+            auto_login = input("Attempt auto-login? (y/n): ").strip().lower()
+            if auto_login == 'y':
+                username, password = client.load_credentials()
+                if username and password:
+                    client.login_user(username, password)
+            else:
+                print("[+] Skipping auto-login.")
+
         while True:
-            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, exit")
+            print("\nCommands: register, login, upload, download, list, list-users, share, unshare, delete-credentials exit")
             cmd = input("Enter command: ").strip().lower()
 
             if cmd == "register":
@@ -196,7 +278,10 @@ if __name__ == "__main__":
             elif cmd == "login":
                 username = input("Enter username: ")
                 password = getpass.getpass("Enter password: ")
-                client.login_user(username, password)
+                if client.login_user(username, password):
+                    save = input("Save credentials for auto-login? (y/n): ").strip().lower()
+                    if save == 'y':
+                        client.save_credentials(username, password)
 
             elif cmd == "upload":
                 path = input("Enter full path of file to upload: ")
@@ -227,6 +312,12 @@ if __name__ == "__main__":
                 print("[+] Exiting.")
                 client.client_socket.close()
                 break
+
+            elif cmd == "delete_credentials":
+                client.delete_credentials()
+
+            elif cmd == "logout":
+                client.logout()
 
             else:
                 print("[!] Unknown command.")
