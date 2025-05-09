@@ -4,6 +4,9 @@ import os
 from constants import Constants
 import crypto_utils
 import secrets
+from colorama import init, Fore
+
+init()
 
 class FileSharePeer:
     def __init__(self, port):
@@ -20,7 +23,7 @@ class FileSharePeer:
     def start_peer(self):
         self.peer_socket.bind((self.host, self.port))
         self.peer_socket.listen(5)
-        print(f"Peer listening on port {self.port}")
+        print(f"{Fore.CYAN}Peer listening on port {self.port}{Fore.RESET}")
 
         while True:
             client_socket, client_address = self.peer_socket.accept()
@@ -31,7 +34,7 @@ class FileSharePeer:
             client_thread.start()
 
     def handle_client_connection(self, client_socket, client_address):
-        print(f"Accepted connection from {client_address}")
+        print(f"{Fore.CYAN}Accepted connection from {client_address}{Fore.RESET}")
         try:
             while True:
                 command = client_socket.recv(1024).decode().strip()
@@ -51,7 +54,7 @@ class FileSharePeer:
                             "salt": salt
                         }
                         client_socket.sendall("SUCCESS".encode())
-                        print(f"[+] Registered user: {username}")
+                        print(f"{Fore.GREEN}[+] Registered user: {username}{Fore.RESET}")
 
                 elif command == "LOGIN":
                     data = client_socket.recv(1024).decode().strip()
@@ -62,7 +65,7 @@ class FileSharePeer:
                             self.authenticated_clients[client_address] = username
                             client_socket.sendall("SUCCESS".encode())
                             client_socket.sendall(self.session_key)
-                            print(f"[+] User {username} logged in from {client_address}")
+                            print(f"{Fore.GREEN}[+] User {username} logged in from {client_address}{Fore.RESET}")
                         else:
                             client_socket.sendall("INVALID_CREDENTIALS".encode())
                     else:
@@ -104,7 +107,7 @@ class FileSharePeer:
                     if target_user not in file_info["shared_with"]:
                         file_info["shared_with"].append(target_user)
                         client_socket.sendall("SUCCESS".encode())
-                        print(f"[+] File '{filename}' shared with '{target_user}' by '{current_user}'")
+                        print(f"{Fore.GREEN}[+] File '{filename}' shared with '{target_user}' by '{current_user}'{Fore.RESET}")
                     else:
                         client_socket.sendall("ALREADY_SHARED".encode())
 
@@ -129,7 +132,7 @@ class FileSharePeer:
                     if "shared_with" in file_info and target_user in file_info["shared_with"]:
                         file_info["shared_with"].remove(target_user)
                         client_socket.sendall("SUCCESS".encode())
-                        print(f"[+] File '{filename}' unshared with '{target_user}' by '{current_user}'")
+                        print(f"{Fore.GREEN}[+] File '{filename}' unshared with '{target_user}' by '{current_user}'{Fore.RESET}")
                     else:
                         client_socket.sendall("NOT_SHARED".encode())
 
@@ -166,7 +169,7 @@ class FileSharePeer:
                                 "tag": tag,
                                 "offset": ciphertext_len
                             })
-                            print(f"[+] Received chunk {chunk_index + 1}/{total_chunks} for '{filename}'")
+                            print(f"{Fore.CYAN}[+] Received chunk {chunk_index + 1}/{total_chunks} for '{filename}'{Fore.RESET}")
 
                         filepath = os.path.join(Constants.SHARED_FOLDER, filename + ".enc")
                         with open(filepath, 'wb') as f:
@@ -180,7 +183,7 @@ class FileSharePeer:
                             "owner": current_user,
                             "shared_with": []
                         }
-                        print(f"[+] Received encrypted file: {filename} from {self.authenticated_clients[client_address]}")
+                        print(f"{Fore.GREEN}[+] Received encrypted file: {filename} from {self.authenticated_clients[client_address]}{Fore.RESET}")
                         client_socket.sendall("SUCCESS".encode())
 
                     elif command == "DOWNLOAD":
@@ -208,7 +211,7 @@ class FileSharePeer:
                                 client_socket.sendall(len(chunk_meta["nonce"]).to_bytes(4, 'big') + chunk_meta["nonce"])
                                 client_socket.sendall(len(chunk_meta["tag"]).to_bytes(4, 'big') + chunk_meta["tag"])
                                 client_socket.sendall(len(chunk_data).to_bytes(4, 'big') + chunk_data)
-                                print(f"[+] Sent chunk {chunk_index + 1}/{file_info['total_chunks']} for '{filename}'")
+                                print(f"{Fore.CYAN}[+] Sent chunk {chunk_index + 1}/{file_info['total_chunks']} for '{filename}'{Fore.RESET}")
                         else:
                             client_socket.sendall(b"FILE_NOT_FOUND")
 
@@ -245,12 +248,12 @@ class FileSharePeer:
                     client_socket.sendall("UNKNOWN_COMMAND".encode())
 
         except Exception as e:
-            print(f"Error handling client {client_address}: {e}")
+            print(f"{Fore.RED}Error handling client {client_address}: {e}{Fore.RESET}")
         finally:
             if client_address in self.authenticated_clients:
                 del self.authenticated_clients[client_address]
             client_socket.close()
-            print(f"Closed connection with {client_address}")
+            print(f"{Fore.CYAN}Closed connection with {client_address}{Fore.RESET}")
 
 if __name__ == "__main__":
     port = 5000
