@@ -18,59 +18,6 @@ class FileSharePeer:
         os.makedirs(Constants.SHARED_FOLDER, exist_ok=True)
         os.makedirs(Constants.DB_FOLDER, exist_ok=True)
 
-        self.__load_state()
-
-    def __load_state(self):
-        user_file = f"{Constants.DB_FOLDER}/users.json"
-        if os.path.getsize(user_file) > 0:
-            with open(user_file, 'r') as f:
-                user_data = json.load(f)
-                for username, data in user_data.items():
-                    self.users[username] = {
-                        "hashed_password": bytes.fromhex(data["hashed_password"]),
-                        "salt": bytes.fromhex(data["salt"])
-                    }
-
-        file_path = f"{Constants.DB_FOLDER}/files.json"
-        if os.path.getsize(file_path):
-            with open(file_path, 'r') as f:
-                file_data = json.load(f)
-                for filename, data in file_data.items():
-                    if os.path.exists(data["filepath"]):
-                        self.shared_files[filename] = {
-                            "filepath": data["filepath"],
-                            "hash": bytes.fromhex(data["hash"]) if isinstance(data["hash"], str) else data["hash"],
-                            "nonce": bytes.fromhex(data["nonce"]) if isinstance(data["nonce"], str) else data["nonce"],
-                            "tag": bytes.fromhex(data["tag"]) if isinstance(data["tag"], str) else data["tag"],
-                            "owner": data["owner"],
-                            "shared_with": data.get("shared_with", [])
-                        }
-
-    def __save_state(self):
-        with open(f"{Constants.DB_FOLDER}/users.json", 'w') as f:
-            # Convert bytes to hex strings for JSON serialization
-            serializable_users = {}
-            for username, data in self.users.items():
-                serializable_users[username] = {
-                    "hashed_password": data["hashed_password"].hex(),
-                    "salt": data["salt"].hex()
-                }
-            json.dump(serializable_users, f)
-        
-        with open(f"{Constants.DB_FOLDER}/files.json", 'w') as f:
-            # Convert bytes to hex strings for JSON serialization
-            serializable_files = {}
-            for filename, data in self.shared_files.items():
-                serializable_files[filename] = {
-                    "filepath": data["filepath"],
-                    "hash": data["hash"].hex() if isinstance(data["hash"], bytes) else data["hash"],
-                    "nonce": data["nonce"].hex() if isinstance(data["nonce"], bytes) else data["nonce"],
-                    "tag": data["tag"].hex() if isinstance(data["tag"], bytes) else data["tag"],
-                    "owner": data["owner"],
-                    "shared_with": data.get("shared_with", [])
-                }
-            json.dump(serializable_files, f)
-
     def start_peer(self):
         self.peer_socket.bind((self.host, self.port))
         self.peer_socket.listen(5)
@@ -104,7 +51,6 @@ class FileSharePeer:
                             "hashed_password": hashed_password,
                             "salt": salt
                         }
-                        self.__save_state()
                         client_socket.sendall("SUCCESS".encode())
                         print(f"[+] Registered user: {username}")
 
@@ -158,7 +104,6 @@ class FileSharePeer:
                         
                     if target_user not in file_info["shared_with"]:
                         file_info["shared_with"].append(target_user)
-                        self.__save_state()
                         client_socket.sendall("SUCCESS".encode())
                         print(f"[+] File '{filename}' shared with '{target_user}' by '{current_user}'")
                     else:
@@ -184,7 +129,6 @@ class FileSharePeer:
                         
                     if "shared_with" in file_info and target_user in file_info["shared_with"]:
                         file_info["shared_with"].remove(target_user)
-                        self.__save_state()
                         client_socket.sendall("SUCCESS".encode())
                         print(f"[+] File '{filename}' unshared with '{target_user}' by '{current_user}'")
                     else:
@@ -218,7 +162,6 @@ class FileSharePeer:
                             "owner": current_user,
                             "shared_with": []
                         }
-                        self.__save_state()
                         print(f"[+] Received encrypted file: {filename} from {self.authenticated_clients[client_address]}")
                         client_socket.sendall("SUCCESS".encode())
 
