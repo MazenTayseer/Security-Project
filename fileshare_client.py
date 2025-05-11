@@ -11,13 +11,14 @@ from colorama import init, Fore
 init()
 
 class FileShareClient:
-    def __init__(self):
+    def __init__(self, port):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.username = None
         self.session_key = None
         self.is_authenticated = False
-        self.credentials_file = Constants.CREDENTIALS_ENC
+        self.credentials_file = Constants.credentials_file(port)
         self.chunk_size = 1024 * 1024
+        self.connected_peers = set()
 
     def __password_check(self, password):
         if len(password) < 8:
@@ -33,7 +34,17 @@ class FileShareClient:
     def connect_to_peer(self, peer_address):
         try:
             self.client_socket.connect(peer_address)
+            self.connected_peers.add(peer_address)
             print(f"{Fore.CYAN}Connected to peer at {peer_address}{Fore.RESET}")
+            self.client_socket.sendall("GET_OTHER_PEERS".encode())
+            response = self.client_socket.recv(1024).decode()
+            if response == "NO_PEERS":
+                print(f"{Fore.YELLOW}[!] No other peers connected.{Fore.RESET}")
+            else:
+                peers = response.split(",")
+                for peer in peers:
+                    self.connected_peers.add(("127.0.0.1", int(peer)))
+                print(f"{Fore.CYAN}[+] Connected peers for broadcast: {peers}{Fore.RESET}")
             return True
         except Exception as e:
             print(f"{Fore.RED}Error connecting to peer {peer_address}: {e}{Fore.RESET}")
@@ -301,6 +312,44 @@ class FileShareClient:
             print(f"{Fore.CYAN}[+] Files available to you:{Fore.RESET}")
             print(file_list)
 
+    def broadcast_list_files(self):
+        if not self.is_authenticated:
+            print(f"{Fore.RED}[!] You must be logged in to list files from peers.{Fore.RESET}")
+            return
+        
+        if not self.connected_peers:
+            print(f"{Fore.YELLOW}[!] No connected peers available.{Fore.RESET}")
+            return
+
+        all_files = []
+        for peer in self.connected_peers:
+            try:
+                current_port = self.client_socket.getpeername()[1]
+                if peer[1] != current_port:
+                    peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    peer_socket.connect(peer)
+                else:
+                    peer_socket = self.client_socket
+                peer_socket.sendall("BROADCAST_LIST".encode())
+                
+                response = peer_socket.recv(8192).decode()
+                
+                if response == "NO_FILES_FOUND":
+                    print(f"{Fore.YELLOW}[!] No files available from peer {peer}.{Fore.RESET}")
+                else:
+                    all_files.append(f"Peer {peer}:\n{response}")
+                
+                if peer[1] != current_port:
+                    peer_socket.close()
+            except Exception as e:
+                print(f"{Fore.RED}[!] Error communicating with peer {peer}: {e}{Fore.RESET}")
+
+        if all_files:
+            print(f"{Fore.CYAN}[+] Combined files from all peers:{Fore.RESET}")
+            print("\n".join(all_files))
+        else:
+            print(f"{Fore.YELLOW}[!] No files available from any peers.{Fore.RESET}")
+
     def logout(self):
         if not self.is_authenticated:
             print(f"{Fore.RED}[!] You are not logged in.{Fore.RESET}")
@@ -314,9 +363,9 @@ class FileShareClient:
 
 if __name__ == "__main__":
     peer_ip = "127.0.0.1"
-    peer_port = 5000
+    peer_port = int(input("Enter peer port: "))
 
-    client = FileShareClient()
+    client = FileShareClient(peer_port)
     if client.connect_to_peer((peer_ip, peer_port)):
         if os.path.exists(client.credentials_file):
             print(f"{Fore.CYAN}[+] Found saved credentials.{Fore.RESET}")
@@ -329,7 +378,7 @@ if __name__ == "__main__":
                 print(f"{Fore.CYAN}[+] Skipping auto-login.{Fore.RESET}")
 
         while True:
-            print(f"{Fore.YELLOW}\nCommands: register, login, upload, download, list, list-users, share, unshare, delete-credentials, logout, search, exit{Fore.RESET}")
+            print(f"{Fore.YELLOW}\nCommands: register, login, upload, download, list, broadcast, list-users, share, unshare, delete-credentials, logout, search, exit{Fore.RESET}")
             cmd = input("Enter command: ").strip().lower()
 
             if cmd == "register":
@@ -356,6 +405,9 @@ if __name__ == "__main__":
 
             elif cmd == "list":
                 client.list_shared_files()
+                
+            elif cmd == "broadcast":
+                client.broadcast_list_files()
                 
             elif cmd == "list-users":
                 client.list_users()

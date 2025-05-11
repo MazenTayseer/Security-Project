@@ -17,8 +17,9 @@ class FileSharePeer:
         self.shared_files = {}  # {filename: {filepath, hash, nonce, tag, owner, shared_with}}
         self.authenticated_clients = {}  # {client_address: username}
         self.session_key = secrets.token_bytes(32)
+        self.known_hosts = "5000,5001"
         os.makedirs(Constants.SHARED_FOLDER, exist_ok=True)
-        os.remove(Constants.CREDENTIALS_ENC) if os.path.exists(Constants.CREDENTIALS_ENC) else None
+        os.remove(Constants.credentials_file(port)) if os.path.exists(Constants.credentials_file(port)) else None
 
     def start_peer(self):
         self.peer_socket.bind((self.host, self.port))
@@ -40,8 +41,12 @@ class FileSharePeer:
                 command = client_socket.recv(1024).decode().strip()
                 if not command:
                     break
+                
+                if command == "GET_OTHER_PEERS":
+                    client_socket.sendall(self.known_hosts.encode())
+                    print(f"{Fore.GREEN}[+] Sent known hosts to {client_address}{Fore.RESET}")
 
-                if command == "REGISTER":
+                elif command == "REGISTER":
                     data = client_socket.recv(1024).decode().strip()
                     username, hashed_password_hex, salt_hex = data.split(":")
                     hashed_password = bytes.fromhex(hashed_password_hex)
@@ -135,6 +140,14 @@ class FileSharePeer:
                         print(f"{Fore.GREEN}[+] File '{filename}' unshared with '{target_user}' by '{current_user}'{Fore.RESET}")
                     else:
                         client_socket.sendall("NOT_SHARED".encode())
+
+                elif command == "BROADCAST_LIST":                                        
+                    file_list = "\n".join(self.shared_files.keys())
+                    if file_list:
+                        client_socket.sendall(file_list.encode())
+                    else:
+                        client_socket.sendall(b"NO_FILES_FOUND")
+                    print(f"{Fore.GREEN}[+] Broadcast list sent {Fore.RESET}")
 
                 elif command in ["UPLOAD", "DOWNLOAD", "LIST", "SEARCH"]:
                     if client_address not in self.authenticated_clients:
@@ -256,6 +269,6 @@ class FileSharePeer:
             print(f"{Fore.CYAN}Closed connection with {client_address}{Fore.RESET}")
 
 if __name__ == "__main__":
-    port = 5000
+    port = int(input("Enter port number: "))
     peer = FileSharePeer(port)
     peer.start_peer()

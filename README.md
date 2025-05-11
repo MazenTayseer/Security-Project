@@ -49,5 +49,3 @@
 - `exit` - Close the connection
 
 ## TODO
-
-- passphrase in server stored

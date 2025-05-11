@@ -1,3 +1,6 @@
 class Constants:
     SHARED_FOLDER = "shared"
-    CREDENTIALS_ENC = "credentials.enc"
+
+    @staticmethod
+    def credentials_file(port):
+        return f"credentials_{port}.enc"
